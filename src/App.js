@@ -9,6 +9,9 @@ import PageNotFound from "./Pages/PageNotFound";
 import LoginPage from "./Pages/LoginPage";
 import Notification from "./Data/Notification";
 import { LanguageProvider } from "./i18n/LanguageContext";
+import LicenseActivationPage from "./Pages/LicenseActivationPage";
+
+// Lazy load components
 const Dashboard = React.lazy(() => import("./Pages/Dashboard"));
 const Inbox = React.lazy(() => import("./Pages/Inbox"));
 const Users = React.lazy(() => import("./Pages/Users"));
@@ -73,7 +76,6 @@ const DocumentsAuditReports = React.lazy(() => import("./Pages/ReportsP/Document
 
 function App() {
   return (
-
     <MenuProvider>
       <LanguageProvider>
         <Router>
@@ -87,15 +89,16 @@ function App() {
             pauseOnHover
             draggable
           />
-          <Suspense fallback={<div>Loading...</div>}>
+          <Suspense fallback={<div className="flex h-screen items-center justify-center">Loading...</div>}>
             <Routes>
-              {/* Public Routes */}
+              {/* 🔥 PUBLIC ROUTES */}
               <Route path="/" element={<LoginPage />} />
+              <Route path="/activate" element={<LicenseActivationPage />} />
               <Route path="/notifications" element={<Notification />} />
               <Route path="/adminOCRResponce" element={<AdminsOCRResponce />} />
               <Route path="/profile" element={<ChangePasswordPage />} />
 
-              {/* Protected Routes */}
+              {/* 🔥 PROTECTED ROUTES (Yahan LicenseGuard HATA DIYA HAI) */}
               <Route element={<ProtectedRoute />}>
                 <Route path="/newDash" element={<Dashboard />} />
                 <Route path="/dashboard" element={<DashboardnEW />} />
@@ -146,23 +149,19 @@ function App() {
                 <Route path="/Role-rights" element={<RoleRightss />} />
                 <Route path="/Waiting-room" element={<WaitingRooms />} />
                 <Route path="/newDash" element={<DashboardnEW />} />
+
                 <Route path="/export" element={<ExportDatas />} />
                 <Route path="/import" element={<Imports />} />
                 <Route path="/LanguageMaster" element={<LanguageMasters />} />
                 <Route path="/trash-documents" element={<TrashDocs />} />
-
                 <Route path="/duplicate-files" element={<DuplicateFilesPages />} />
-
                 <Route path="/shared-documents" element={<SharedDocuments />} />
-
-                {/* reports */}
                 <Route path="/documents-archived-report" element={<DocumentsArchivedReport />} />
                 <Route path="/documents-downloaded-report" element={<DocumentsDownloadedReport />} />
                 <Route path="/documents-upload-report" element={<DocumentsUploadReport />} />
                 <Route path="/documents-retrive-report" element={<DocumentRetriveReports />} />
                 <Route path="/documents-trash-report" element={<DocumentsTrashedReports />} />
                 <Route path="/documents-audit-report" element={<DocumentsAuditReports />} />
-
               </Route>
 
               {/* Fallback */}
@@ -172,7 +171,6 @@ function App() {
         </Router>
       </LanguageProvider>
     </MenuProvider>
-
   );
 }
 

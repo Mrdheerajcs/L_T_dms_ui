@@ -21,6 +21,7 @@ import AutoTranslate from "../i18n/AutoTranslate";
 import { useLanguage } from "../i18n/LanguageContext";
 import { getFallbackTranslation } from '../i18n/autoTranslator';
 import apiClient from "../API/apiClient";
+import { licenseApi } from "../API/licenseApi";   // ← ADD
 
 const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
@@ -70,6 +71,9 @@ const LoginPage = () => {
     preloadTranslationsForTerms
   } = useLanguage();
 
+
+
+
   useEffect(() => {
     console.log('🔍 DocumentManagement Component - Language Status:', {
       currentLanguage,
@@ -105,6 +109,26 @@ const LoginPage = () => {
   // CHARACTERS for captcha - removed ambiguous ones
   const CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const CAPTCHA_LENGTH = 6;
+
+
+  // ✅ NEW: Check license on mount; redirect if not activated
+useEffect(() => {
+  let cancelled = false;
+  (async () => {
+    try {
+      console.log("🔍 Checking license status...");
+      const status = await licenseApi.getStatus();
+      console.log("✅ License status:", status);
+      if (!cancelled && status.status === "NOT_ACTIVATED") {
+        console.log("➡️ Redirecting to /activate");
+        navigate("/activate");
+      }
+    } catch (err) {
+      console.error("❌ License status check failed:", err);
+    }
+  })();
+  return () => { cancelled = true; };
+}, [navigate]);
 
   // Load languages and set selected language
   useEffect(() => {
