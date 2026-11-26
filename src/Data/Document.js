@@ -1,4 +1,4 @@
-// DocumentManagement.jsx - Complete Working Version
+// DocumentManagement.jsx - Complete version with Group Editing (check-out / check-in) + Version History
 
 import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import apiClient from "../API/apiClient";
@@ -14,6 +14,7 @@ import { FiPlus } from "react-icons/fi";
 import { IoIosArrowForward, IoIosArrowBack } from "react-icons/io";
 import { MdOutlineClose } from "react-icons/md";
 import VersionInput from '../Components/VersionInput';
+import VersionHistoryModal from '../Components/VersionHistoryModal'; // 🆕 version history
 
 // Import AutoTranslate components
 import AutoTranslate from '../i18n/AutoTranslate';
@@ -49,7 +50,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
   const navigate = useNavigate();
   const params = useParams();
   const data = location.state;
-  
+
   // ============ STATE DECLARATIONS ============
   const [formData, setFormData] = useState({
     fileNo: "",
@@ -60,7 +61,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
     year: null,
     uploadedFilePaths: [],
   });
-  
+
   const [scaleValue, setScaleValue] = useState("2");
   const [uploadedFileNames, setUploadedFileNames] = useState([]);
   const [uploadedFilePath, setUploadedFilePath] = useState([]);
@@ -108,10 +109,32 @@ const DocumentManagement = ({ fieldsDisabled }) => {
   const [isMetadataComplete, setIsMetadataComplete] = useState(false);
   const [isWaitingRoomModalOpen, setIsWaitingRoomModalOpen] = useState(false);
   const [currYear, setCurrYear] = useState(null);
+
   const [dynamicMetadata, setDynamicMetadata] = useState([
     { id: "", key: "", value: "" }
   ]);
   const [deletedMetaDataIds, setDeletedMetaDataIds] = useState([]);
+
+  // 🔒 NEW: lock + version history state
+  const lockedDocIdRef = useRef(null);          // id of the document I currently hold
+  const [lockInfo, setLockInfo] = useState(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  // ============ LOCK HELPERS ============
+  const isLockActive = (doc) =>
+    !!doc?.checkedOut && !!doc?.lockExpiresOn && new Date(doc.lockExpiresOn) > new Date();
+
+  const isLockedByOther = (doc) =>
+    isLockActive(doc) && Number(doc.checkedOutBy) !== Number(UserId);
+
+  const releaseLock = async (docId) => {
+    if (!docId) return;
+    try {
+      await apiClient.post(`/api/documents/${docId}/cancel-checkout`);
+    } catch (e) {
+      console.error("Release lock failed:", e);
+    }
+  };
 
   // ============ SAFE ACCESS UTILITIES ============
   const safeGet = (obj, path, defaultValue = '') => {
@@ -171,7 +194,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
 
   useEffect(() => {
     if (data) {
-      handleEditDocument(data);
+      handleEditDocument(data, { skipLock: !!data?.fromWaitingRoom });   // 🔒 CHANGED
     }
     fetchCategory();
     fetchYear();
@@ -206,6 +229,29 @@ const DocumentManagement = ({ fieldsDisabled }) => {
       }, 300);
     }
   }, [selectedDoc]);
+
+  // 🔒 NEW: release the lock when the tab closes or this page is left
+  useEffect(() => {
+    const releaseOnClose = () => {
+      const id = lockedDocIdRef.current;
+      if (!id) return;
+      fetch(`${API_HOST}/api/documents/${id}/cancel-checkout`, {
+        method: "POST",
+        keepalive: true,
+        headers: { Authorization: `Bearer ${localStorage.getItem("tokenKey")}` },
+      });
+    };
+    window.addEventListener("beforeunload", releaseOnClose);
+
+    return () => {
+      window.removeEventListener("beforeunload", releaseOnClose);
+      const id = lockedDocIdRef.current;      // leaving this page
+      if (id) {
+        apiClient.post(`/api/documents/${id}/cancel-checkout`).catch(() => { });
+        lockedDocIdRef.current = null;
+      }
+    };
+  }, []);
 
   // ============ POPUP HELPER ============
   const showPopup = (message, type = 'info') => {
@@ -262,7 +308,8 @@ const DocumentManagement = ({ fieldsDisabled }) => {
   const fetchDocuments = async () => {
     try {
       setLoading(true);
-      const response = await apiClient.get(`${DOCUMENTHEADER_API}/pending/employee/${UserId}`);
+      // 🔒 CHANGED: own pending docs + (if enabled on server) same-department docs
+      const response = await apiClient.get(`${DOCUMENTHEADER_API}/pending/shared`);
       setDocuments(response.data || []);
       setTotalItems(response.data?.length || 0);
     } catch (error) {
@@ -852,12 +899,12 @@ const DocumentManagement = ({ fieldsDisabled }) => {
 
     try {
       setLoading(true);
-      
+
       const validDocs = selectedDocuments.filter(doc => doc !== undefined && doc !== null);
-      
+
       const processedDocuments = validDocs.map((doc, index) => {
         const fileName = doc.displayName || doc.fileName || doc.documentName || `file_${index + 1}`;
-        
+
         return {
           path: doc.waitingRoomPath || doc.path || '',
           version: metadata.version || doc.version || '1.0',
@@ -988,7 +1035,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
       setUploadedFilePath([]);
       setUploadedFileNames([]);
       setSelectedFiles([]);
-      
+
       if (response.data?.response?.documentHeader) {
         setEditingDoc(response.data.response.documentHeader);
         setFormData(prev => ({
@@ -1002,19 +1049,19 @@ const DocumentManagement = ({ fieldsDisabled }) => {
           version: prev.version || '',
         }));
       }
-      
+
       setDynamicMetadata([{ key: "", value: "" }]);
       fetchDocuments();
-      
+
       showPopup(
         "✅ File added successfully! You can add more files with different years.",
         "success"
       );
-      
+
       if (fileInputRef.current) {
         fileInputRef.current.value = null;
       }
-      
+
     } catch (error) {
       console.error("Error saving document:", error);
       showPopup("Document save failed: " + error.message, "warning");
@@ -1023,10 +1070,40 @@ const DocumentManagement = ({ fieldsDisabled }) => {
     }
   };
 
-  // ============ EDIT DOCUMENT ============
-  const handleEditDocument = (doc) => {
+  // ============ EDIT DOCUMENT (with check-out) ============
+  const handleEditDocument = async (doc, { skipLock = false } = {}) => {
     if (!doc) return;
-    
+
+    // 🔒 NEW: check out before editing
+    if (!skipLock && doc.id) {
+      try {
+        // moving from one document to another → release the first
+        if (lockedDocIdRef.current && lockedDocIdRef.current !== doc.id) {
+          await releaseLock(lockedDocIdRef.current);
+          lockedDocIdRef.current = null;
+        }
+        const res = await apiClient.post(`/api/documents/${doc.id}/checkout`);
+        lockedDocIdRef.current = doc.id;
+        setLockInfo(res.data);
+      } catch (err) {
+        const status = err.response?.status;
+        if (status === 409) {
+          const { lockedBy, since } = err.response.data;
+          showPopup(
+            `This document is being edited by ${lockedBy} since ${formatDate(since)}. You can view it but not edit it.`,
+            "warning"
+          );
+          fetchDocuments();
+        } else if (status === 403) {
+          showPopup(err.response.data.message, "warning");
+        } else {
+          showPopup("Could not check out the document. Please try again.", "error");
+        }
+        return;
+      }
+    }
+
+    // ---------- existing code, unchanged ----------
     setHandleEditDocumentActive(true);
     setEditingDoc(doc);
 
@@ -1063,7 +1140,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
 
     setUploadedFileNames(existingFiles.map((file) => file.name));
     setUploadedFilePath(existingFiles);
-    
+
     const backendMetadata = doc.metadataList || [];
     const formattedMetadata = backendMetadata
       .filter(item => item !== undefined && item !== null)
@@ -1079,7 +1156,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
     }
   };
 
-  // ============ UPDATE DOCUMENT ============
+  // ============ UPDATE DOCUMENT (check-in) ============
   const handleSaveEdit = async () => {
     const userId = localStorage.getItem("id");
     if (!userId) {
@@ -1149,7 +1226,10 @@ const DocumentManagement = ({ fieldsDisabled }) => {
       }
 
       showPopup(response?.data?.response?.msg || "Document updated successfully!", "success");
-      
+
+      lockedDocIdRef.current = null;   // 🔒 NEW: server released the lock on check-in
+      setLockInfo(null);               // 🔒 NEW
+
       setUploadedFilePath([]);
       setUploadedFileNames([]);
       setSelectedFiles([]);
@@ -1163,7 +1243,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
         year: null,
         uploadedFilePaths: [],
       });
-      
+
       fetchDocuments();
     } catch (error) {
       console.error("Error updating document:", error);
@@ -1171,6 +1251,29 @@ const DocumentManagement = ({ fieldsDisabled }) => {
     } finally {
       setBProcess(false);
     }
+  };
+
+  // 🔒 NEW: cancel editing and release the lock without saving
+  const handleCancelEdit = async () => {
+    const id = editingDoc?.id;
+    if (id && lockedDocIdRef.current === id) {
+      await releaseLock(id);
+    }
+    lockedDocIdRef.current = null;
+    setLockInfo(null);
+
+    setEditingDoc(null);
+    setHandleEditDocumentActive(false);
+    setUploadedFilePath([]);
+    setUploadedFileNames([]);
+    setSelectedFiles([]);
+    setDynamicMetadata([{ id: "", key: "", value: "" }]);
+    setDeletedMetaDataIds([]);
+    setFormData({
+      fileNo: "", title: "", subject: "", version: "",
+      category: null, year: null, uploadedFilePaths: [],
+    });
+    fetchDocuments();
   };
 
   // ============ MODAL HANDLERS ============
@@ -1322,6 +1425,18 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                 </span>
               )}
             </h2>
+
+            {/* 🔒 NEW: lock banner */}
+            {lockInfo?.checkedOut && editingDoc && (
+              <div className="mb-3 p-3 bg-yellow-50 rounded-lg border border-yellow-200 text-sm text-yellow-800">
+                🔒 <AutoTranslate>You have checked out this document. Others cannot edit it until you save or cancel.</AutoTranslate>
+                {lockInfo.lockExpiresOn && (
+                  <span className="ml-2 text-xs text-yellow-700">
+                    (<AutoTranslate>auto-release at</AutoTranslate> {new Date(lockInfo.lockExpiresOn).toLocaleTimeString()})
+                  </span>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-col-4 mb-4">
               <div className="form-group">
@@ -1490,8 +1605,8 @@ const DocumentManagement = ({ fieldsDisabled }) => {
               ))}
             </div>
 
-            <button 
-              type="button" 
+            <button
+              type="button"
               onClick={() => setDynamicMetadata([...dynamicMetadata, { id: "", key: "", value: "" }])}
               className="btn-add"
             >
@@ -1509,7 +1624,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                 </span>
               )}
             </h2>
-            
+
             <div className="grid grid-col-4">
               <div className="form-group">
                 <label>
@@ -1605,7 +1720,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                 <p className="text-sm text-gray-500 mt-2">
                   <AutoTranslate>Drag & drop {folderUpload ? "folders" : "files"} here, or choose from your device.</AutoTranslate>
                 </p>
-                
+
                 {uploadedFilePath.length > 0 && (
                   <div className="mt-2 p-2 bg-blue-50 rounded-lg">
                     <p className="text-xs text-blue-700">
@@ -1623,11 +1738,10 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                   type="button"
                   onClick={() => setIsWaitingRoomModalOpen(true)}
                   disabled={!isMetadataComplete || selectedFiles.length > 0}
-                  className={`px-6 h-14 rounded-xl transition-all ${
-                    (!isMetadataComplete || selectedFiles.length > 0)
+                  className={`px-6 h-14 rounded-xl transition-all ${(!isMetadataComplete || selectedFiles.length > 0)
                       ? "bg-gray-400 text-gray-200 cursor-not-allowed"
                       : "bg-blue-500 text-white"
-                  }`}
+                    }`}
                 >
                   <AutoTranslate>Choose From Waiting Room</AutoTranslate>
                 </button>
@@ -1651,15 +1765,14 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                 <button
                   onClick={handleUploadDocument}
                   disabled={isUploading || selectedFiles.length === 0 || !formData.version}
-                  className={`flex-1 min-w-[200px] text-white rounded-xl h-14 flex items-center justify-center relative transition-all duration-300 ${
-                    isUploading ? "bg-blue-600 cursor-not-allowed" : "bg-blue-900"
-                  }`}
+                  className={`flex-1 min-w-[200px] text-white rounded-xl h-14 flex items-center justify-center relative transition-all duration-300 ${isUploading ? "bg-blue-600 cursor-not-allowed" : "bg-blue-900"
+                    }`}
                 >
                   {isUploading ? (
                     <>
                       <svg className="animate-spin h-5 w-5 mr-2 text-white" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                       </svg>
                       <AutoTranslate>Uploading... {uploadProgress}%</AutoTranslate>
                     </>
@@ -1697,10 +1810,10 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                   </span>
                 )}
               </h3>
-              
+
               {(() => {
                 const validFiles = uploadedFilePath.filter(file => file !== undefined && file !== null);
-                
+
                 if (validFiles.length === 0) {
                   return (
                     <div className="text-center py-4 text-gray-500">
@@ -1708,7 +1821,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                     </div>
                   );
                 }
-                
+
                 const groupedFiles = validFiles.reduce((acc, file, index) => {
                   if (!file) return acc;
                   const year = getSafeYear(file);
@@ -1716,7 +1829,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                   acc[year].push({ file, index });
                   return acc;
                 }, {});
-                
+
                 return Object.entries(groupedFiles).map(([year, files]) => (
                   <div key={year} className="mb-4">
                     <h4 className="text-sm font-semibold text-gray-700 mb-2">
@@ -1740,7 +1853,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                             const status = getSafeStatus(file);
                             const filePath = getSafePath(file);
                             const isWaitingRoomFile = file?.isWaitingRoomFile || false;
-                            
+
                             return (
                               <tr key={index} className="border-t hover:bg-gray-50">
                                 <td className="px-3 py-2">{index + 1}</td>
@@ -1757,7 +1870,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium
                                     ${status === 'APPROVED' ? 'bg-green-100 text-green-700' :
                                       status === 'REJECTED' ? 'bg-red-100 text-red-700' :
-                                      'bg-yellow-100 text-yellow-700'}`}
+                                        'bg-yellow-100 text-yellow-700'}`}
                                   >
                                     {status}
                                   </span>
@@ -1793,7 +1906,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                   </div>
                 ));
               })()}
-              
+
               <button
                 onClick={handleDiscardAll}
                 className="mt-2 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
@@ -1806,12 +1919,12 @@ const DocumentManagement = ({ fieldsDisabled }) => {
           {/* ========== SAVE / UPDATE BUTTONS ========== */}
           <div className="edit-doc-wrapper mt-6">
             <div className="flex justify-between items-center">
-            <div className="itemBtn">
-              {uploadedFilePath.length > 0 && (                
+              <div className="itemBtn">
+                {uploadedFilePath.length > 0 && (
                   <button onClick={handleDiscardAll} className="btn-discard">
                     <AutoTranslate>Discard All</AutoTranslate>
-                  </button>               
-              )}
+                  </button>
+                )}
 
                 {location.state?.fromWaitingRoom ? (
                   <button
@@ -1838,19 +1951,17 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                     <AutoTranslate>Upload Document</AutoTranslate>
                   </button>
                 )}
+
+                {/* 🔒 NEW: cancel edit (release lock) */}
+                {editingDoc && lockInfo?.checkedOut && (
+                  <button type="button" onClick={handleCancelEdit} className="btn-cancel">
+                    <AutoTranslate>Cancel Edit (Release Lock)</AutoTranslate>
+                  </button>
+                )}
               </div>
             </div>
           </div>
         </div>
-
-
-
-
-
-
-
-
-
 
         {/* ========== SEARCH & TABLE ========== */}
         <div className="data-search-wrapper">
@@ -1892,6 +2003,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                 <th><AutoTranslate>Category</AutoTranslate></th>
                 <th><AutoTranslate>No. Of Attached Files</AutoTranslate></th>
                 <th><AutoTranslate>Uploaded Date</AutoTranslate></th>
+                <th><AutoTranslate>Lock</AutoTranslate></th>
                 <th className="text-center"><AutoTranslate>Edit</AutoTranslate></th>
                 <th className="text-center"><AutoTranslate>View</AutoTranslate></th>
               </tr>
@@ -1907,11 +2019,23 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                   <td>{doc?.documentDetails?.length || 0}</td>
                   <td>{formatDate(doc.createdOn)}</td>
                   <td>
+                    {isLockActive(doc) ? (
+                      <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-full text-xs">
+                        🔒 {doc.checkedOutByName}
+                      </span>
+                    ) : (
+                      <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-xs">
+                        <AutoTranslate>Available</AutoTranslate>
+                      </span>
+                    )}
+                  </td>
+                  <td>
                     <div className="btn-center">
-                      <button 
-                        onClick={() => handleEditDocument(doc)} 
-                        disabled={doc.isActive === 0}
-                        className={`viewBtn ${doc.isActive === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      <button
+                        onClick={() => handleEditDocument(doc)}
+                        disabled={doc.isActive === 0 || isLockedByOther(doc)}
+                        title={isLockedByOther(doc) ? `Locked by ${doc.checkedOutByName}` : ""}
+                        className={`viewBtn ${(doc.isActive === 0 || isLockedByOther(doc)) ? 'opacity-50 cursor-not-allowed' : ''}`}
                       >
                         <PencilIcon />
                       </button>
@@ -1955,9 +2079,9 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                 <IoIosArrowBack />
               </button>
               {totalPages > 0 && getPageNumbers().map((page) => (
-                <button 
-                  key={page} 
-                  onClick={() => setCurrentPage(page)} 
+                <button
+                  key={page}
+                  onClick={() => setCurrentPage(page)}
                   className={`${currentPage === page ? "active" : ""}`}
                 >
                   {page}
@@ -1988,11 +2112,20 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                   </div>
                   <h2><AutoTranslate>Document Details</AutoTranslate></h2>
                 </div>
-                <div className="headerRight">
-                  <button className="printBtn" onClick={() => handlePrintReport(selectedDoc?.id)} title="Print">
-                    <PrinterIcon className="h-6 w-6" />
+                <div className="headerRight flex items-center gap-2">
+                  <button className="printBtn flex items-center justify-center gap-1 px-3 h-10 min-w-[110px]"
+                    onClick={() => setIsHistoryOpen(true)} title="Change History">
+                    <ArrowPathIcon className="h-5 w-5" />
+                    <span className="text-sm whitespace-nowrap"><AutoTranslate>History</AutoTranslate></span>
                   </button>
-                  <button className="closeBtn" onClick={closeModal} title="Close">
+
+                  <button className="printBtn flex items-center justify-center gap-1 px-3 h-10 min-w-[90px]"
+                    onClick={() => handlePrintReport(selectedDoc?.id)} title="Print">
+                    <PrinterIcon className="h-5 w-5" />
+                    <span className="text-sm whitespace-nowrap"><AutoTranslate>Print</AutoTranslate></span>
+                  </button>
+
+                  <button className="closeBtn flex items-center justify-center h-10 w-10" onClick={closeModal} title="Close">
                     <MdOutlineClose />
                   </button>
                 </div>
@@ -2093,7 +2226,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
                                     ${file.status === "APPROVED" ? "bg-green-100 text-green-800" :
                                       file.status === "REJECTED" ? "bg-red-100 text-red-800" :
-                                      "bg-yellow-100 text-yellow-800"}`}
+                                        "bg-yellow-100 text-yellow-800"}`}
                                   >
                                     {file.status || <AutoTranslate>PENDING</AutoTranslate>}
                                   </span>
@@ -2137,7 +2270,7 @@ const DocumentManagement = ({ fieldsDisabled }) => {
                                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ml-2
                                     ${file.status === "APPROVED" ? "bg-green-100 text-green-800" :
                                       file.status === "REJECTED" ? "bg-red-100 text-red-800" :
-                                      "bg-yellow-100 text-yellow-800"}`}
+                                        "bg-yellow-100 text-yellow-800"}`}
                                   >
                                     {file.status || <AutoTranslate>PENDING</AutoTranslate>}
                                   </span>
@@ -2220,6 +2353,14 @@ const DocumentManagement = ({ fieldsDisabled }) => {
           fileUrl={blobUrl}
           fileName={selectedDocFile?.docName}
           fileData={selectedDocFile}
+        />
+
+        {/* 🆕 Version History Modal */}
+        <VersionHistoryModal
+          isOpen={isHistoryOpen}
+          onClose={() => setIsHistoryOpen(false)}
+          headerId={selectedDoc?.id}
+          title={selectedDoc?.title}
         />
 
         {/* Supported File Types Modal */}

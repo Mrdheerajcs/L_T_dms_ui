@@ -19,6 +19,7 @@ import LoadingComponent from '../Components/LoadingComponent';
 import AutoTranslate from '../i18n/AutoTranslate'; // Import AutoTranslate
 import { useLanguage } from '../i18n/LanguageContext'; // Import useLanguage hook
 import Popup from '../Components/Popup';
+import VersionHistoryModal from '../Components/VersionHistoryModal'; // 🆕 version history
 
 const Approve = () => {
   // Get language context
@@ -67,6 +68,7 @@ const Approve = () => {
   const [openingFileIndex, setOpeningFileIndex] = useState(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [popupMessage, setPopupMessage] = useState(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false); // 🆕 version history
 
   // Debug language status
   useEffect(() => {
@@ -126,6 +128,10 @@ const Approve = () => {
       onClose: () => setPopupMessage(null)
     });
   };
+
+  // ============ LOCK HELPERS ============
+  const isLockActive = (doc) =>
+    !!doc?.checkedOut && !!doc?.lockExpiresOn && new Date(doc.lockExpiresOn) > new Date();
 
   const fetchUserBranch = async () => {
     setLoading(true);
@@ -358,7 +364,18 @@ const Approve = () => {
     });
   }, [selectedDoc, searchFileTerm]);
 
+  // 🔒 is the currently opened document checked out by someone?
+  const isBeingEdited = isLockActive(selectedDoc);
+
   const handleStatusChange = (doc, status) => {
+    // 🔒 block approve/reject while the document is being edited
+    if (isBeingEdited) {
+      showPopup(
+        `This document is being edited by ${selectedDoc.checkedOutByName}. Please approve after they check it in.`,
+        "warning"
+      );
+      return;
+    }
     if (status === "REJECTED") {
       setDocumentToApprove(doc);
       setIsRejectReasonModalOpen(true);
@@ -394,6 +411,14 @@ const Approve = () => {
       setIsSuccessModalOpen(true);
     } catch (error) {
       console.error("Error approving document:", error);
+      setIsConfirmModalOpen(false);
+      // 🔒 show the server's "being edited" message
+      if (error.response?.status === 409) {
+        showPopup(error.response.data.message, "warning");
+        fetchDocuments();
+      } else {
+        showPopup("Failed to approve the document. Please try again.", "error");
+      }
     }
   };
 
@@ -429,6 +454,15 @@ const Approve = () => {
       setIsSuccessModalOpen(true);
     } catch (error) {
       console.error("Error rejecting document:", error);
+      setIsRejectReasonModalOpen(false);
+      setRejectReason("");
+      // 🔒 show the server's "being edited" message
+      if (error.response?.status === 409) {
+        showPopup(error.response.data.message, "warning");
+        fetchDocuments();
+      } else {
+        showPopup("Failed to reject the document. Please try again.", "error");
+      }
     }
   };
 
@@ -443,6 +477,7 @@ const Approve = () => {
   console.log("selectedDoc Data:", selectedDoc);
   const closeModal = () => {
     setIsOpen(false);
+    setIsHistoryOpen(false); // 🆕 close history together with the document modal
     setSelectedDoc(null);
   };
 
@@ -675,6 +710,9 @@ const Approve = () => {
                   <AutoTranslate>Uploaded Date</AutoTranslate>
                 </th>
                 <th>
+                  <AutoTranslate>Lock</AutoTranslate>
+                </th>
+                <th>
                   <AutoTranslate>User</AutoTranslate><AutoTranslate> Name</AutoTranslate>
                 </th>
                 <th>
@@ -720,6 +758,19 @@ const Approve = () => {
                       {new Date(doc.createdOn).toLocaleDateString()}
                     </td>
 
+                    {/* 🔒 lock badge */}
+                    <td>
+                      {isLockActive(doc) ? (
+                        <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-full text-xs">
+                          🔒 {doc.checkedOutByName}
+                        </span>
+                      ) : (
+                        <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-xs">
+                          <AutoTranslate>Available</AutoTranslate>
+                        </span>
+                      )}
+                    </td>
+
                     <td>
                       {doc.employee ? doc.employee.name : "N/A"}
                     </td>
@@ -737,7 +788,7 @@ const Approve = () => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="11" className="text-center">
+                  <td colSpan="12" className="text-center">
                     <AutoTranslate>No data found.</AutoTranslate>
                   </td>
                 </tr>
@@ -770,8 +821,6 @@ const Approve = () => {
                 disabled={currentPage === 1 || totalPages === 0}
                 className={`${currentPage === 1 || totalPages === 0 ? "cursor-not-allowed" : ""}`}
               >
-                {/* <ArrowLeftIcon className="inline h-4 w-4 mr-2 mb-1" /> */}
-                {/* <AutoTranslate>Previous</AutoTranslate> */}
                 <IoIosArrowBack />
               </button>
 
@@ -788,8 +837,6 @@ const Approve = () => {
                 disabled={currentPage === totalPages || totalPages === 0}
                 className={`${currentPage === totalPages || totalPages === 0 ? "cursor-not-allowed" : ""}`}
               >
-                {/* <AutoTranslate>Next</AutoTranslate> */}
-                {/* <ArrowRightIcon className="inline h-4 w-4 ml-2 mb-1" /> */}
                 <IoIosArrowForward />
               </button>
             </div>
@@ -813,6 +860,17 @@ const Approve = () => {
                     <p className="text-sm text-gray-600 mt-2 sm:mt-0">
                       <strong><AutoTranslate>Uploaded Date:</AutoTranslate></strong> {formatDate(selectedDoc?.createdOn)}
                     </p>
+
+                    {/* 🆕 History Button */}
+                    <button
+                      className="printBtn flex items-center justify-center gap-1 px-3 h-10 min-w-[110px] no-print"
+                      onClick={() => setIsHistoryOpen(true)}
+                      title="Change History"
+                    >
+                      <ArrowPathIcon className="h-5 w-5" />
+                      <span className="text-sm whitespace-nowrap"><AutoTranslate>History</AutoTranslate></span>
+                    </button>
+
                     {/* Print Button */}
                     <button className="printBtn" onClick={printPage} title="Print">
                       <PrinterIcon className="h-6 w-6" />
@@ -873,6 +931,14 @@ const Approve = () => {
                         )}
                       </div>
                     </div>
+
+                    {/* 🔒 being-edited banner */}
+                    {isBeingEdited && (
+                      <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+                        🔒 <AutoTranslate>Being edited by</AutoTranslate> {selectedDoc.checkedOutByName}.{" "}
+                        <AutoTranslate>Approval is disabled until they save or cancel.</AutoTranslate>
+                      </div>
+                    )}
 
                     {/* Attached Files */}
                     <div className="mt-8">
@@ -978,8 +1044,9 @@ const Approve = () => {
                                   <div className="text-center no-print">
                                     <select
                                       className="border px-2 py-1 rounded-md text-sm w-full max-w-[100px]"
+                                      value=""
                                       onChange={(e) => handleStatusChange(file, e.target.value)}
-                                      disabled={file.status === "APPROVED" || file.status === "REJECTED"}
+                                      disabled={isBeingEdited || file.status === "APPROVED" || file.status === "REJECTED"}
                                     >
                                       <option value=""><AutoTranslate>Select</AutoTranslate></option>
                                       <option value="APPROVED"><AutoTranslate>APPROVED</AutoTranslate></option>
@@ -1058,8 +1125,9 @@ const Approve = () => {
                                   <div className="mt-3 flex gap-2 no-print">
                                     <select
                                       className="flex-1 border px-2 py-1.5 rounded-md text-sm"
+                                      value=""
                                       onChange={(e) => handleStatusChange(file, e.target.value)}
-                                      disabled={file.status === "APPROVED" || file.status === "REJECTED"}
+                                      disabled={isBeingEdited || file.status === "APPROVED" || file.status === "REJECTED"}
                                     >
                                       <option value=""><AutoTranslate>Select Action</AutoTranslate></option>
                                       <option value="APPROVED"><AutoTranslate>APPROVED</AutoTranslate></option>
@@ -1116,6 +1184,14 @@ const Approve = () => {
           fileUrl={blobUrl}
           fileName={selectedDocFile?.docName}
           fileData={selectedDocFile}
+        />
+
+        {/* 🆕 Version History Modal */}
+        <VersionHistoryModal
+          isOpen={isHistoryOpen}
+          onClose={() => setIsHistoryOpen(false)}
+          headerId={selectedDoc?.id}
+          title={selectedDoc?.title}
         />
 
       </div>
