@@ -89,4 +89,28 @@ export const getEmployeeImage = async (employeeId, extraHeaders = {}) => {
   }
 };
 
+
+
+// apiClient.js me sabse niche add karo
+export const logoutApi = async () => {
+  try {
+    const token = localStorage.getItem("tokenKey");
+    const deviceId = localStorage.getItem("deviceId");
+    
+    if (!token || !deviceId) return;
+
+    await apiClient.post(`/auth/logout?deviceId=${deviceId}`, {}, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+  } catch (error) {
+    console.error("Backend logout failed:", error);
+  } finally {
+    // Frontend storage clear karo (chahe backend fail ho jaye)
+    localStorage.removeItem("tokenKey");
+    localStorage.removeItem("refreshToken");
+    localStorage.removeItem("deviceId");
+    // window.location.href = "/"; // Force reload to login
+  }
+};
+
 export default apiClient;

@@ -9,7 +9,7 @@ import { TbPasswordUser, TbUserCog } from "react-icons/tb";
 import { PiUserCircleGear } from "react-icons/pi";
 import { FiUser, FiGlobe } from "react-icons/fi";
 import apiClient from "../API/apiClient";
-import { getEmployeeImage } from "../API/apiClient";
+import { getEmployeeImage, logoutApi } from "../API/apiClient";
 import { API_HOST, SYSTEM_ADMIN, BRANCH_ADMIN, DEPARTMENT_ADMIN, USER } from "../API/apiConfig";
 import Popup from "../Components/Popup";
 import { NotificationBell } from "../Data/Notification";
@@ -82,10 +82,10 @@ function Header({ toggleSidebar, userName, triggerMenuRefresh }) {
     setSelectedLang(currentLanguage);
   }, [currentLanguage, defaultLanguage, translationStatus, isTranslationNeeded, availableLanguages]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("tokenKey");
-    navigate("/");
-  };
+const handleLogout = async () => {
+  await logoutApi(); 
+  navigate("/");     
+};
 
   const handleChangePassword = () => {
     navigate("/profile");
